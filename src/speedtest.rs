@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 
 const DOWNLOAD_URL: &str = "https://speed.cloudflare.com/__down?bytes=26214400";
 const UPLOAD_URL: &str = "https://speed.cloudflare.com/__up";
-const UPLOAD_CHUNK: usize = 4 * 1024 * 1024; // 4 MiB per upload request
+const UPLOAD_CHUNK: usize = 512 * 1024; // 512 KiB per upload request for frequent updates
 const WINDOW_DURATION: Duration = Duration::from_millis(250);
 const TEST_DURATION: Duration = Duration::from_secs(10);
 
