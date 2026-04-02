@@ -60,13 +60,14 @@ impl App {
 fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let chunks = Layout::vertical([
-        Constraint::Length(3), // title
-        Constraint::Length(2), // status
-        Constraint::Length(4), // download
-        Constraint::Length(4), // upload
-        Constraint::Length(9), // high scores
-        Constraint::Min(0),   // spacer
-        Constraint::Length(1), // footer
+        Constraint::Length(3),  // title
+        Constraint::Length(2),  // status
+        Constraint::Length(4),  // download
+        Constraint::Length(4),  // upload
+        Constraint::Length(9),  // high scores
+        Constraint::Length(9),  // history
+        Constraint::Min(0),    // spacer
+        Constraint::Length(1),  // footer
     ])
     .split(area);
 
@@ -201,18 +202,59 @@ fn draw(frame: &mut Frame, app: &App) {
         frame.render_widget(table, chunks[4]);
     }
 
+    // History
+    let history_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Recent Results ");
+    if app.scores.history.is_empty() {
+        let text = Paragraph::new("  No history yet")
+            .block(history_block)
+            .fg(Color::DarkGray);
+        frame.render_widget(text, chunks[5]);
+    } else {
+        let header = Row::new(vec!["#", "Combined", "Down", "Up", "Date"])
+            .style(Style::default().fg(Color::White).bold());
+        let rows: Vec<Row> = app
+            .scores
+            .history
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                Row::new(vec![
+                    format!("{}", i + 1),
+                    format!("{:.1}", e.combined_mbps),
+                    format!("{:.1}", e.download_mbps),
+                    format!("{:.1}", e.upload_mbps),
+                    e.date.format("%Y-%m-%d %H:%M").to_string(),
+                ])
+            })
+            .collect();
+        let widths = [
+            Constraint::Length(3),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(18),
+        ];
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(history_block)
+            .style(Style::default().fg(Color::Cyan));
+        frame.render_widget(table, chunks[5]);
+    }
+
     // Error
     if let Some(ref err) = app.error {
         let err_para = Paragraph::new(err.as_str())
             .alignment(Alignment::Center)
             .style(Style::default().fg(Color::Red));
-        frame.render_widget(err_para, chunks[5]);
+        frame.render_widget(err_para, chunks[6]);
     }
 
     // Footer
     let footer = Paragraph::new(" [Enter] Start  [q] Quit")
         .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(footer, chunks[6]);
+    frame.render_widget(footer, chunks[7]);
 }
 
 fn setup_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>> {

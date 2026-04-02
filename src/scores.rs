@@ -2,7 +2,7 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-const MAX_SCORES: usize = 5;
+const MAX_ENTRIES: usize = 5;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ScoreEntry {
@@ -15,6 +15,8 @@ pub struct ScoreEntry {
 #[derive(Default, Serialize, Deserialize)]
 pub struct ScoreBoard {
     pub entries: Vec<ScoreEntry>,
+    #[serde(default)]
+    pub history: Vec<ScoreEntry>,
 }
 
 fn scores_path() -> PathBuf {
@@ -46,15 +48,23 @@ impl ScoreBoard {
 
     pub fn add(&mut self, download_mbps: f64, upload_mbps: f64) {
         let combined_mbps = download_mbps + upload_mbps;
-        self.entries.push(ScoreEntry {
+        let entry = ScoreEntry {
             download_mbps,
             upload_mbps,
             combined_mbps,
             date: Local::now(),
-        });
+        };
+
+        // History: most recent first, keep last 5
+        self.history.insert(0, entry.clone());
+        self.history.truncate(MAX_ENTRIES);
+
+        // High scores: sorted by combined, keep top 5
+        self.entries.push(entry);
         self.entries
             .sort_by(|a, b| b.combined_mbps.partial_cmp(&a.combined_mbps).unwrap());
-        self.entries.truncate(MAX_SCORES);
+        self.entries.truncate(MAX_ENTRIES);
+
         self.save();
     }
 }
