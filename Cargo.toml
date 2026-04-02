@@ -7,5 +7,6 @@ edition = "2024"
 ratatui = "0.30"
 crossterm = "0.29"
 tokio = { version = "1", features = ["full"] }
-reqwest = "0.13"
+reqwest = { version = "0.13", features = ["stream"] }
+futures-util = "0.3"
 rand = "0.9"
