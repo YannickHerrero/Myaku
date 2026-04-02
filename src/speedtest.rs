@@ -2,7 +2,8 @@ use futures_util::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-const DOWNLOAD_URL: &str = "https://speed.cloudflare.com/__down?bytes=26214400";
+// Request 1GB — we stop streaming after TEST_DURATION, so this just needs to be large enough
+const DOWNLOAD_URL: &str = "https://speed.cloudflare.com/__down?bytes=1073741824";
 const UPLOAD_URL: &str = "https://speed.cloudflare.com/__up";
 const UPLOAD_CHUNK: usize = 512 * 1024;
 const REPORT_INTERVAL: Duration = Duration::from_millis(250);
@@ -24,56 +25,52 @@ fn bytes_to_mbps(bytes: u64, duration: Duration) -> f64 {
 
 pub async fn run_download(tx: mpsc::Sender<SpeedMsg>) {
     let client = reqwest::Client::new();
-    let test_start = Instant::now();
+
+    // Single large request — stream it and stop after TEST_DURATION
+    let response = match client.get(DOWNLOAD_URL).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx
+                .send(SpeedMsg::Error(format!("Download request failed: {e}")))
+                .await;
+            return;
+        }
+    };
+
+    let mut stream = response.bytes_stream();
     let mut total_bytes: u64 = 0;
     let mut samples: Vec<u64> = Vec::new();
     let mut measure_start: Option<Instant> = None;
     let mut last_report = Instant::now();
 
-    // Stream multiple large downloads for TEST_DURATION
-    while test_start.elapsed() < TEST_DURATION {
-        let response = match client.get(DOWNLOAD_URL).send().await {
-            Ok(r) => r,
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
             Err(e) => {
                 let _ = tx
-                    .send(SpeedMsg::Error(format!("Download request failed: {e}")))
+                    .send(SpeedMsg::Error(format!("Download stream error: {e}")))
                     .await;
                 return;
             }
         };
 
-        let mut stream = response.bytes_stream();
+        if measure_start.is_none() {
+            measure_start = Some(Instant::now());
+            last_report = Instant::now();
+        }
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = match chunk {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = tx
-                        .send(SpeedMsg::Error(format!("Download stream error: {e}")))
-                        .await;
-                    return;
-                }
-            };
+        total_bytes += chunk.len() as u64;
 
-            if measure_start.is_none() {
-                measure_start = Some(Instant::now());
-                last_report = Instant::now();
-            }
+        if last_report.elapsed() >= REPORT_INTERVAL {
+            let elapsed = measure_start.unwrap().elapsed();
+            let mbps = bytes_to_mbps(total_bytes, elapsed);
+            samples.push((mbps * 100.0) as u64);
+            let _ = tx.try_send(SpeedMsg::Progress { current_mbps: mbps });
+            last_report = Instant::now();
+        }
 
-            total_bytes += chunk.len() as u64;
-
-            // Report cumulative average at regular intervals
-            if last_report.elapsed() >= REPORT_INTERVAL {
-                let elapsed = measure_start.unwrap().elapsed();
-                let mbps = bytes_to_mbps(total_bytes, elapsed);
-                samples.push((mbps * 100.0) as u64);
-                let _ = tx.try_send(SpeedMsg::Progress { current_mbps: mbps });
-                last_report = Instant::now();
-            }
-
-            if test_start.elapsed() >= TEST_DURATION {
-                break;
-            }
+        if measure_start.is_some_and(|s| s.elapsed() >= TEST_DURATION) {
+            break;
         }
     }
 
