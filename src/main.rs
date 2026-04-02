@@ -1,3 +1,4 @@
+mod scores;
 mod speedtest;
 
 use std::io::{self, stdout};
@@ -12,10 +13,11 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout},
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Sparkline},
+    widgets::{Block, Borders, Paragraph, Row, Sparkline, Table},
 };
 use tokio::sync::mpsc;
 
+use crate::scores::ScoreBoard;
 use crate::speedtest::SpeedMsg;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -38,6 +40,7 @@ struct App {
     upload_result: Option<TestResult>,
     error: Option<String>,
     should_quit: bool,
+    scores: ScoreBoard,
 }
 
 impl App {
@@ -49,6 +52,7 @@ impl App {
             upload_result: None,
             error: None,
             should_quit: false,
+            scores: ScoreBoard::load(),
         }
     }
 }
@@ -60,6 +64,7 @@ fn draw(frame: &mut Frame, app: &App) {
         Constraint::Length(2), // status
         Constraint::Length(4), // download
         Constraint::Length(4), // upload
+        Constraint::Length(9), // high scores
         Constraint::Min(0),   // spacer
         Constraint::Length(1), // footer
     ])
@@ -155,18 +160,59 @@ fn draw(frame: &mut Frame, app: &App) {
         frame.render_widget(text, chunks[3]);
     }
 
+    // High Scores
+    let score_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" High Scores (DL + UL) ");
+    if app.scores.entries.is_empty() {
+        let text = Paragraph::new("  No scores yet")
+            .block(score_block)
+            .fg(Color::DarkGray);
+        frame.render_widget(text, chunks[4]);
+    } else {
+        let header = Row::new(vec!["#", "Combined", "Down", "Up", "Date"])
+            .style(Style::default().fg(Color::White).bold());
+        let rows: Vec<Row> = app
+            .scores
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                Row::new(vec![
+                    format!("{}", i + 1),
+                    format!("{:.1}", e.combined_mbps),
+                    format!("{:.1}", e.download_mbps),
+                    format!("{:.1}", e.upload_mbps),
+                    e.date.format("%Y-%m-%d %H:%M").to_string(),
+                ])
+            })
+            .collect();
+        let widths = [
+            Constraint::Length(3),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(18),
+        ];
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(score_block)
+            .style(Style::default().fg(Color::Yellow));
+        frame.render_widget(table, chunks[4]);
+    }
+
     // Error
     if let Some(ref err) = app.error {
         let err_para = Paragraph::new(err.as_str())
             .alignment(Alignment::Center)
             .style(Style::default().fg(Color::Red));
-        frame.render_widget(err_para, chunks[4]);
+        frame.render_widget(err_para, chunks[5]);
     }
 
     // Footer
     let footer = Paragraph::new(" [Enter] Start  [q] Quit")
         .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(footer, chunks[5]);
+    frame.render_widget(footer, chunks[6]);
 }
 
 fn setup_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>> {
@@ -218,6 +264,10 @@ async fn main() -> io::Result<()> {
                         });
                         app.live_speed_mbps = 0.0;
                         app.phase = Phase::Done;
+
+                        if let Some(ref dl) = app.download_result {
+                            app.scores.add(dl.speed_mbps, avg_mbps);
+                        }
                     }
                     _ => {}
                 },
