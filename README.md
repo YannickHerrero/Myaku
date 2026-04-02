@@ -17,9 +17,15 @@ Myaku measures your download and upload speeds directly from the terminal, with 
 
 ## Installation
 
-### From source
-
 Requires [Rust](https://rustup.rs/) 1.85+.
+
+### From GitHub
+
+```sh
+cargo install --git https://github.com/YannickHerrero/Myaku.git
+```
+
+### From source
 
 ```sh
 git clone https://github.com/YannickHerrero/Myaku.git
@@ -28,12 +34,6 @@ cargo build --release
 ```
 
 The binary will be at `target/release/myaku`.
-
-### Run directly
-
-```sh
-cargo run --release
-```
 
 ## Usage
 
