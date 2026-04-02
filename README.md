@@ -9,6 +9,9 @@ Myaku measures your download and upload speeds directly from the terminal, with 
 - Download and upload speed measurement
 - Live speed display that updates throughout each test
 - Sparkline graphs showing speed variation over time
+- Top 5 high score board ranked by combined download + upload speed
+- Last 5 recent results history
+- Persistent scores saved to `~/.local/share/myaku/scores.json`
 - Uses Cloudflare's speed test endpoints (no API key required)
 - Single binary, no configuration needed
 
