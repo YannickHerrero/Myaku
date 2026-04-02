@@ -1,5 +1,219 @@
 mod speedtest;
 
-fn main() {
-    println!("myaku");
+use std::io::{self, stdout};
+
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    ExecutableCommand,
+};
+use ratatui::{
+    Frame, Terminal,
+    layout::{Alignment, Constraint, Layout},
+    style::{Color, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Sparkline},
+};
+
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Idle,
+    Download,
+    Upload,
+    Done,
+}
+
+struct TestResult {
+    speed_mbps: f64,
+    samples: Vec<u64>,
+}
+
+struct App {
+    phase: Phase,
+    live_speed_mbps: f64,
+    download_result: Option<TestResult>,
+    upload_result: Option<TestResult>,
+    error: Option<String>,
+    should_quit: bool,
+}
+
+impl App {
+    fn new() -> Self {
+        Self {
+            phase: Phase::Idle,
+            live_speed_mbps: 0.0,
+            download_result: None,
+            upload_result: None,
+            error: None,
+            should_quit: false,
+        }
+    }
+}
+
+fn draw(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let chunks = Layout::vertical([
+        Constraint::Length(3), // title
+        Constraint::Length(2), // status
+        Constraint::Length(4), // download
+        Constraint::Length(4), // upload
+        Constraint::Min(0),   // spacer
+        Constraint::Length(1), // footer
+    ])
+    .split(area);
+
+    // Title
+    let title = Paragraph::new("myaku speedtest")
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title(" myaku "))
+        .bold();
+    frame.render_widget(title, chunks[0]);
+
+    // Status
+    let status_text = match app.phase {
+        Phase::Idle => "Press Enter to start".into(),
+        Phase::Download => format!("Testing download... {:.1} Mbps", app.live_speed_mbps),
+        Phase::Upload => format!("Testing upload... {:.1} Mbps", app.live_speed_mbps),
+        Phase::Done => "Test complete. Press Enter to rerun.".into(),
+    };
+    let status_color = match app.phase {
+        Phase::Idle => Color::Gray,
+        Phase::Download | Phase::Upload => Color::Yellow,
+        Phase::Done => Color::Green,
+    };
+    let status = Paragraph::new(status_text)
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(status_color));
+    frame.render_widget(status, chunks[1]);
+
+    // Download section
+    let dl_block = Block::default().borders(Borders::ALL).title(" Download ");
+    if let Some(ref result) = app.download_result {
+        let inner = dl_block.inner(chunks[2]);
+        frame.render_widget(dl_block, chunks[2]);
+
+        let dl_chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+
+        let speed_line = Line::from(vec![
+            Span::styled(
+                format!("  {:.1} Mbps", result.speed_mbps),
+                Style::default().fg(Color::Cyan).bold(),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(speed_line), dl_chunks[0]);
+
+        if !result.samples.is_empty() {
+            let sparkline = Sparkline::default()
+                .data(&result.samples)
+                .style(Style::default().fg(Color::Cyan));
+            frame.render_widget(sparkline, dl_chunks[1]);
+        }
+    } else if app.phase == Phase::Download {
+        let inner = dl_block.inner(chunks[2]);
+        frame.render_widget(dl_block, chunks[2]);
+        let text = Paragraph::new(format!("  {:.1} Mbps", app.live_speed_mbps))
+            .style(Style::default().fg(Color::Yellow));
+        frame.render_widget(text, inner);
+    } else {
+        let text = Paragraph::new("  —").block(dl_block).fg(Color::DarkGray);
+        frame.render_widget(text, chunks[2]);
+    }
+
+    // Upload section
+    let ul_block = Block::default().borders(Borders::ALL).title(" Upload ");
+    if let Some(ref result) = app.upload_result {
+        let inner = ul_block.inner(chunks[3]);
+        frame.render_widget(ul_block, chunks[3]);
+
+        let ul_chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+
+        let speed_line = Line::from(vec![
+            Span::styled(
+                format!("  {:.1} Mbps", result.speed_mbps),
+                Style::default().fg(Color::Magenta).bold(),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(speed_line), ul_chunks[0]);
+
+        if !result.samples.is_empty() {
+            let sparkline = Sparkline::default()
+                .data(&result.samples)
+                .style(Style::default().fg(Color::Magenta));
+            frame.render_widget(sparkline, ul_chunks[1]);
+        }
+    } else if app.phase == Phase::Upload {
+        let inner = ul_block.inner(chunks[3]);
+        frame.render_widget(ul_block, chunks[3]);
+        let text = Paragraph::new(format!("  {:.1} Mbps", app.live_speed_mbps))
+            .style(Style::default().fg(Color::Yellow));
+        frame.render_widget(text, inner);
+    } else {
+        let text = Paragraph::new("  —").block(ul_block).fg(Color::DarkGray);
+        frame.render_widget(text, chunks[3]);
+    }
+
+    // Error
+    if let Some(ref err) = app.error {
+        let err_para = Paragraph::new(err.as_str())
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Red));
+        frame.render_widget(err_para, chunks[4]);
+    }
+
+    // Footer
+    let footer = Paragraph::new(" [Enter] Start  [q] Quit")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(footer, chunks[5]);
+}
+
+fn setup_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>> {
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))
+}
+
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = stdout().execute(LeaveAlternateScreen);
+}
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    // Restore terminal on panic
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_hook(info);
+    }));
+
+    let mut terminal = setup_terminal()?;
+    let mut app = App::new();
+
+    loop {
+        terminal.draw(|frame| draw(frame, &app))?;
+
+        if event::poll(std::time::Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        app.should_quit = true;
+                    }
+                    KeyCode::Enter => {
+                        // Will be wired to speedtest in next commit
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if app.should_quit {
+            break;
+        }
+    }
+
+    restore_terminal();
+    Ok(())
 }
