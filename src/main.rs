@@ -14,6 +14,9 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Sparkline},
 };
+use tokio::sync::mpsc;
+
+use crate::speedtest::SpeedMsg;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -188,9 +191,42 @@ async fn main() -> io::Result<()> {
 
     let mut terminal = setup_terminal()?;
     let mut app = App::new();
+    let (tx, mut rx) = mpsc::channel::<SpeedMsg>(32);
 
     loop {
         terminal.draw(|frame| draw(frame, &app))?;
+
+        // Drain all pending speed messages
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                SpeedMsg::Progress { current_mbps } => {
+                    app.live_speed_mbps = current_mbps;
+                }
+                SpeedMsg::PhaseComplete { avg_mbps, samples } => match app.phase {
+                    Phase::Download => {
+                        app.download_result = Some(TestResult {
+                            speed_mbps: avg_mbps,
+                            samples,
+                        });
+                        app.live_speed_mbps = 0.0;
+                        app.phase = Phase::Upload;
+                    }
+                    Phase::Upload => {
+                        app.upload_result = Some(TestResult {
+                            speed_mbps: avg_mbps,
+                            samples,
+                        });
+                        app.live_speed_mbps = 0.0;
+                        app.phase = Phase::Done;
+                    }
+                    _ => {}
+                },
+                SpeedMsg::Error(e) => {
+                    app.error = Some(e);
+                    app.phase = Phase::Done;
+                }
+            }
+        }
 
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
@@ -201,8 +237,20 @@ async fn main() -> io::Result<()> {
                     KeyCode::Char('q') | KeyCode::Esc => {
                         app.should_quit = true;
                     }
-                    KeyCode::Enter => {
-                        // Will be wired to speedtest in next commit
+                    KeyCode::Enter
+                        if app.phase == Phase::Idle || app.phase == Phase::Done =>
+                    {
+                        app.phase = Phase::Download;
+                        app.live_speed_mbps = 0.0;
+                        app.download_result = None;
+                        app.upload_result = None;
+                        app.error = None;
+
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            speedtest::run_download(tx.clone()).await;
+                            speedtest::run_upload(tx).await;
+                        });
                     }
                     _ => {}
                 }
