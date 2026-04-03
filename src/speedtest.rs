@@ -1,9 +1,12 @@
 use futures_util::StreamExt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-// Request 1GB — we stop streaming after TEST_DURATION, so this just needs to be large enough
-const DOWNLOAD_URL: &str = "https://speed.cloudflare.com/__down?bytes=1073741824";
+const DOWNLOAD_CHUNK_BYTES: usize = 25 * 1024 * 1024; // 25MB per request
+const NUM_DOWNLOAD_STREAMS: usize = 4;
+const WARMUP_DURATION: Duration = Duration::from_secs(2);
 const UPLOAD_URL: &str = "https://speed.cloudflare.com/__up";
 const UPLOAD_CHUNK: usize = 512 * 1024;
 const REPORT_INTERVAL: Duration = Duration::from_millis(250);
@@ -25,57 +28,88 @@ fn bytes_to_mbps(bytes: u64, duration: Duration) -> f64 {
 
 pub async fn run_download(tx: mpsc::Sender<SpeedMsg>) {
     let client = reqwest::Client::new();
+    let url = format!(
+        "https://speed.cloudflare.com/__down?bytes={}",
+        DOWNLOAD_CHUNK_BYTES
+    );
 
-    // Single large request — stream it and stop after TEST_DURATION
-    let response = match client.get(DOWNLOAD_URL).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(SpeedMsg::Error(format!("Download request failed: {e}")))
-                .await;
-            return;
-        }
-    };
+    let total_bytes = Arc::new(AtomicU64::new(0));
+    let test_start = Instant::now();
 
-    let mut stream = response.bytes_stream();
-    let mut total_bytes: u64 = 0;
-    let mut samples: Vec<u64> = Vec::new();
-    let mut measure_start: Option<Instant> = None;
-    let mut last_report = Instant::now();
+    // Spawn parallel download streams
+    let mut handles = Vec::new();
+    for _ in 0..NUM_DOWNLOAD_STREAMS {
+        let client = client.clone();
+        let url = url.clone();
+        let total_bytes = Arc::clone(&total_bytes);
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tx
-                    .send(SpeedMsg::Error(format!("Download stream error: {e}")))
-                    .await;
-                return;
+        handles.push(tokio::spawn(async move {
+            while test_start.elapsed() < TEST_DURATION {
+                let response = match client.get(&url).send().await {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+
+                let mut stream = response.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    if test_start.elapsed() >= TEST_DURATION {
+                        return;
+                    }
+                    if let Ok(c) = chunk {
+                        total_bytes.fetch_add(c.len() as u64, Ordering::Relaxed);
+                    }
+                }
             }
-        };
-
-        if measure_start.is_none() {
-            measure_start = Some(Instant::now());
-            last_report = Instant::now();
-        }
-
-        total_bytes += chunk.len() as u64;
-
-        if last_report.elapsed() >= REPORT_INTERVAL {
-            let elapsed = measure_start.unwrap().elapsed();
-            let mbps = bytes_to_mbps(total_bytes, elapsed);
-            samples.push((mbps * 100.0) as u64);
-            let _ = tx.try_send(SpeedMsg::Progress { current_mbps: mbps });
-            last_report = Instant::now();
-        }
-
-        if measure_start.is_some_and(|s| s.elapsed() >= TEST_DURATION) {
-            break;
-        }
+        }));
     }
 
-    let total_duration = measure_start.map(|s| s.elapsed()).unwrap_or_default();
-    let avg_mbps = bytes_to_mbps(total_bytes, total_duration);
+    // Reporter loop: aggregate bytes from all streams and send progress
+    let mut last_bytes: u64 = 0;
+    let mut last_report = Instant::now();
+    let mut samples: Vec<u64> = Vec::new();
+    let mut warmup_bytes: Option<u64> = None;
+    let mut measurement_start: Option<Instant> = None;
+
+    while test_start.elapsed() < TEST_DURATION {
+        tokio::time::sleep(REPORT_INTERVAL).await;
+
+        let now_bytes = total_bytes.load(Ordering::Relaxed);
+        let interval_bytes = now_bytes - last_bytes;
+        let mbps = bytes_to_mbps(interval_bytes, last_report.elapsed());
+
+        let _ = tx.try_send(SpeedMsg::Progress { current_mbps: mbps });
+
+        // Collect samples only after warm-up
+        if test_start.elapsed() >= WARMUP_DURATION {
+            if warmup_bytes.is_none() {
+                warmup_bytes = Some(now_bytes);
+                measurement_start = Some(Instant::now());
+            }
+            samples.push((mbps * 100.0) as u64);
+        }
+
+        last_bytes = now_bytes;
+        last_report = Instant::now();
+    }
+
+    for h in handles {
+        let _ = h.await;
+    }
+
+    let final_total = total_bytes.load(Ordering::Relaxed);
+
+    if final_total == 0 {
+        let _ = tx
+            .send(SpeedMsg::Error("Download failed: no data received".into()))
+            .await;
+        return;
+    }
+
+    let avg_mbps = if let (Some(wb), Some(ms)) = (warmup_bytes, measurement_start) {
+        bytes_to_mbps(final_total - wb, ms.elapsed())
+    } else {
+        bytes_to_mbps(final_total, test_start.elapsed())
+    };
 
     let _ = tx
         .send(SpeedMsg::PhaseComplete { avg_mbps, samples })
