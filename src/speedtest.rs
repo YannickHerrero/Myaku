@@ -2,7 +2,7 @@ use futures_util::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-const DOWNLOAD_CHUNK: usize = 100 * 1024 * 1024; // 100MB per request
+const DOWNLOAD_CHUNK: usize = 100_000_000; // 100MB (Cloudflare max)
 const UPLOAD_URL: &str = "https://speed.cloudflare.com/__up";
 const UPLOAD_CHUNK: usize = 10 * 1024 * 1024; // 10MB per request
 const NUM_CHUNKS: usize = 5;
