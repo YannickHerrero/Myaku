@@ -6,11 +6,11 @@ use tokio::sync::mpsc;
 
 const DOWNLOAD_CHUNK_BYTES: usize = 100 * 1024 * 1024; // 100MB per request
 const NUM_DOWNLOAD_STREAMS: usize = 4;
-const WARMUP_DURATION: Duration = Duration::from_secs(2);
+const WARMUP_DURATION: Duration = Duration::from_secs(1);
 const UPLOAD_URL: &str = "https://speed.cloudflare.com/__up";
 const UPLOAD_CHUNK: usize = 512 * 1024;
 const REPORT_INTERVAL: Duration = Duration::from_millis(250);
-const TEST_DURATION: Duration = Duration::from_secs(10);
+const TEST_DURATION: Duration = Duration::from_secs(3);
 
 pub enum SpeedMsg {
     Progress { current_mbps: f64 },
